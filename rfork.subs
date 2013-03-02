@@ -1,0 +1,583 @@
+#!/usr/bin/perl
+use strict;
+use warnings 'FATAL' => 'all';
+use Encode ();
+use Carp ();
+use Image::Magick ();
+
+sub RForkToHash
+{
+  my ($rfork) = @_;
+  
+  return undef unless defined $rfork;
+  my $fLen = length $rfork;
+  my %resources;
+  
+  eval {
+    SetReadSource($rfork);
+    # read header
+    my $dataOff = ReadUint32();
+    my $mapOff = ReadUint32();
+    my $dataLen = ReadUint32();
+    my $mapLen = ReadUint32();
+    
+    # sanity checks
+    die if $dataOff < 16;
+    die if $mapOff < 16;
+    die if $mapLen < 30;
+    die if ($dataOff < $mapOff && ($dataOff + $dataLen) > $mapOff);
+    die if ($mapOff < $dataOff && ($mapOff + $mapLen) > $dataOff);
+    die if ($dataOff + $dataLen) > $fLen;
+    die if ($mapOff + $mapLen) > $fLen;
+    
+    # resource data - save for later
+    ReadPadding($dataOff - CurOffset());
+    my $dataBlock = ReadRaw($dataLen);
+    
+    # resource map
+    ReadPadding($mapOff - CurOffset());
+    ReadPadding(16);  # copy of header
+    ReadPadding(4);   # handle to next map
+    ReadPadding(2);   # file ref num
+    ReadPadding(2);   # attributes
+    
+    my $typeListOff = $mapOff + ReadUint16();
+    my $nameListOff = $mapOff + ReadUint16();
+    
+    # Inside Macintosh has it wrong. (Really, I'm guessing
+    # it was coded wrong, and never got changed.)
+    # The number of types falls inside the type-list offset.
+    # my $numTypes = ReadUint16() + 1;
+    
+    # type list
+    my %typeInfo;
+    ReadPadding($typeListOff - CurOffset());
+    my $numTypes = ReadUint16() + 1;
+    for my $i (1..$numTypes)
+    {
+      my $typeCode = ReadRaw(4);
+      my $numRefs = ReadUint16() + 1;
+      my $refListOff = $typeListOff + ReadUint16();
+      $typeInfo{$refListOff} = [ $typeCode, $numRefs ];
+    }
+    
+    # reference list
+    my (%dataInfo, %nameInfo);
+    for my $refListOff (sort { $a <=> $b } keys %typeInfo)
+    {
+      ReadPadding($refListOff - CurOffset());
+      my ($typeCode, $numRefs) = @{ $typeInfo{$refListOff} };
+      $resources{$typeCode} = {};
+      for my $i (1..$numRefs)
+      {
+        my $id = ReadSint16();
+        my $nameOffRelative = ReadSint16();
+        ReadPadding(1);  # attributes
+        my $rsrcDataOff = $dataOff + ReadUint24();
+        ReadPadding(4);  # handle
+        
+        $resources{$typeCode}{$id} = {};
+        $dataInfo{$rsrcDataOff} = [ $typeCode, $id ];
+        if ($nameOffRelative >= 0)
+        {
+          $nameInfo{$nameListOff + $nameOffRelative} = [ $typeCode, $id ];
+        }
+      }
+    }
+    
+    # names
+    for my $rnameOff (sort { $a <=> $b } keys %nameInfo)
+    {
+      ReadPadding($rnameOff - CurOffset());
+      my ($typeCode, $id) = @{ $nameInfo{$rnameOff} };
+      my $rnamelen = ReadUint8();
+      my $rname = ReadRaw($rnamelen);
+      $resources{$typeCode}{$id}{'name'} = Encode::decode("MacRoman", $rname);
+    }
+    
+    # data
+    SetReadSource($dataBlock);
+    for my $rdataOff (sort { $a <=> $b } keys %dataInfo)
+    {
+      ReadPadding($rdataOff - $dataOff - CurOffset());
+      my ($typeCode, $id) = @{ $dataInfo{$rdataOff} };
+      my $rdatalen = ReadUint32();
+      $resources{$typeCode}{$id}{'data'} = ReadRaw($rdatalen);
+    }
+  };
+  if ($@)
+  {
+    return undef;
+  }  
+  return \%resources;
+}
+
+sub IconColorTable
+{
+  my ($depth) = @_;
+  
+  if ($depth == 1)
+  {
+    return [ [ 0, 0, 0 ], [ 1, 1, 1 ] ];
+  }
+  
+  die unless ($depth == 8);
+    
+  my @colors;
+  
+  # The table has two major parts:
+  #
+  # - base-6 "web-safe" RGB colors
+  # - base-16 R, G, B, gray color ramps
+  #
+  # The second set excludes the colors added in the first "web-safe"
+  # section. One other wrinkle: black is saved for last, instead of
+  # falling in its "natural" spot within the web-safe section.
+  
+  # So first, we'll build the fractions for "web-safe" vs. "color ramp"
+  # sections, to make this obvious
+  my (@webramp, @singleramp);
+  for my $val (0..15)
+  {
+    if (($val % 3) == 0)
+    {
+      push(@webramp, $val / 15);
+    }
+    else
+    {
+      push(@singleramp, $val / 15);
+    }
+  }
+  
+  # Colors in table go from bright to dark, so flip the built lists
+  @webramp = reverse @webramp;
+  @singleramp = reverse @singleramp;
+  
+  # Now, we can build the web-safe section
+  for my $red (@webramp)
+  {
+    for my $green (@webramp)
+    {
+      for my $blue (@webramp)
+      {
+        push(@colors, [ $red, $green, $blue ]);
+      }
+    }
+  }
+  
+  # Save black for later
+  pop @colors;
+  
+  # Next, handle the single-color ramps: R, G, B, gray
+  for my $spec ([ 1, 0, 0 ], [ 0, 1, 0 ], [ 0, 0, 1 ], [ 1, 1, 1 ])
+  {
+    for my $val (@singleramp)
+    {
+      push(@colors, [ $val * $spec->[0], $val * $spec->[1], $val * $spec->[2] ]);
+    }
+  }
+  
+  # Finally, the black we skipped earlier
+  push(@colors, [ 0, 0, 0 ]);
+
+  return \@colors;
+}
+
+sub IconToImage
+{
+  my ($icn, $icl8, $outpath) = @_;
+  return 0 unless (defined($icn) && length($icn) == 256);
+  return 0 unless $outpath;
+  
+  my $img = Image::Magick->new();
+  $img->Set('size' => '32x32');
+  $img->Read('canvas:rgb(0,0,0,0)');
+  $img->Set('matte' => 'True');
+  $img->Set('alpha' => 'On');
+  
+  
+  my @alpha_data = map { $_ ? 0.0 : 1.0 } split(//, unpack("B*", substr($icn, 128, 128)));
+  my ($ctab, @color_data);
+  if ($icl8)
+  {
+    $ctab = IconColorTable(8);
+    @color_data = unpack("C*", $icl8);
+  }
+  else
+  {
+    $ctab = IconColorTable(1);
+    @color_data = map { $_ + 0 } split(//, unpack("B*", substr($icn, 0, 128)));
+  }
+  
+  for my $y (0..31)
+  {
+    for my $x (0..31)
+    {
+      my @clr = @{ $ctab->[shift @color_data] };
+      push(@clr, shift @alpha_data);
+      $img->SetPixel('x' => $x, 'y' => $y, 'channel' => 'All', 'color' => \@clr);
+    }
+  }
+  
+  $img->Write($outpath);
+  return 1;
+}
+
+sub GetString
+{
+  my ($rsrc, $id, %opts) = @_;
+  
+  my $str = undef;
+  $str = $opts{'default'} if $opts{'default'};
+  
+  my $data = undef;
+  $data = $rsrc->{'STR '}{$id}{'data'}
+      if defined $rsrc && exists $rsrc->{'STR '} && exists $rsrc->{'STR '}{$id};
+  return $str unless defined $data;
+  return $str unless length($data) > 1;
+  
+  my $len = unpack('C', $data);
+  $str =  Encode::decode('MacRoman', substr($data, 1, $len));
+  
+  if ($opts{'trim'})
+  {
+    $str =~ s/\s+/ /g;
+    $str =~ s/^ //;
+    $str =~ s/ $//;
+    unless (length $str)
+    {
+      $str = $opts{'default'} if $opts{'default'};
+    }
+  }
+  
+  return $str;
+}
+
+sub GetStyl
+{
+  my ($rsrc, $id) = @_;
+  
+  my @styles;
+  my $data = undef;
+  $data = $rsrc->{'styl'}{$id}{'data'};
+  return \@styles unless defined $data;
+  return \@styles unless length($data) > 1;
+  
+  SetReadSource($data);
+  my $ct = ReadSint16();
+  for my $i (1..$ct)
+  {
+    my %style;
+    $style{'start'} = ReadSint32();
+    $style{'height'} = ReadSint16();
+    $style{'ascent'} = ReadSint16();
+    $style{'font-id'} = ReadSint16();
+    
+    my $fontStyle = ReadUint8();
+    $style{'bold'} = ($fontStyle & 0x01) ? 1 : 0;
+    $style{'italic'} = ($fontStyle & 0x02) ? 1 : 0;
+    $style{'underline'} = ($fontStyle & 0x04) ? 1 : 0;
+    $style{'outline'} = ($fontStyle & 0x08) ? 1 : 0;
+    $style{'shadow'} = ($fontStyle & 0x10) ? 1 : 0;
+    $style{'condensed'} = ($fontStyle & 0x20) ? 1 : 0;
+    $style{'extended'} = ($fontStyle & 0x40) ? 1 : 0;
+    ReadPadding(1);
+    
+    $style{'size'} = ReadSint16();
+    
+    $style{'color'} = [ (ReadUint16() >> 8), (ReadUint16() >> 8), (ReadUint16() >> 8) ];
+    
+    push(@styles, \%style);
+  }
+  return \@styles;
+}
+
+sub GetClut
+{
+  my ($rsrc, $id) = @_;
+  
+  my @colors;
+  my $data = undef;
+  $data = $rsrc->{'clut'}{$id}{'data'}
+      if defined $rsrc && exists $rsrc->{'clut'} && exists $rsrc->{'clut'}{$id};
+  return \@colors unless defined $data;
+  return \@colors unless length($data) > 15;
+  
+  my $ct = int(length($data) / 8) - 1;
+  SetReadSource($data);
+  ReadPadding(8);
+  for my $i (1..$ct)
+  {
+    my $val = ReadUint16();
+    push(@colors, [ (ReadUint16() >> 8), (ReadUint16() >> 8), (ReadUint16() >> 8), $val ]);
+  }
+  return \@colors;
+}
+
+#####
+## IO handling
+#####
+
+sub ReadUint32
+{
+  return ReadPacked('N', 4);
+}
+sub ReadSint32
+{
+  my $v = ReadUint32();
+  if ($v >= (2 << 30))
+  {
+    $v -= (2 << 31);
+  }
+  return $v;
+}
+sub ReadUint24
+{
+  my $v1 = ReadPacked('C', 1);
+  my $v2 = ReadPacked('n', 2);
+  return ($v1 << 16) + $v2;
+}
+sub ReadSint24
+{
+  my $v = ReadUint24();
+  if ($v >= (2 << 22))
+  {
+    $v -= (2 << 23);
+  }
+  return $v;
+}
+sub ReadUint16
+{
+  return ReadPacked('n', 2);
+}
+sub ReadSint16
+{
+  my $v = ReadUint16();
+  if ($v >= (2 << 14))
+  {
+    $v -= (2 << 15);
+  }
+  return $v;
+}
+sub ReadUint8
+{
+  return ReadPacked('C', 1);
+}
+sub ReadSint8
+{
+  my $v = ReadUint8();
+  if ($v >= (2 << 6))
+  {
+    $v -= (2 << 7);
+  }
+  return $v;
+}
+sub ReadFixed
+{
+  my $fixed = ReadSint32();
+  return $fixed / 65536.0;
+}
+sub ReadBits
+{
+  my ($bits) = @_;
+  my $bytes = int(($bits + 7)/8);
+  return map { $_ + 0 } split(//, ReadPacked('b' . $bits, $bytes));
+}
+sub ReadString
+{
+  my ($size) = @_;
+  return '' unless $size > 0;
+  return Encode::decode('MacRoman', ReadRaw($size));
+}
+sub ReadPStr
+{
+  my ($size) = @_;
+  my $namesize = ReadUint8();
+  die 'String too large' if ($namesize >= $size);
+  my $nm = ReadString($namesize);
+  ReadPadding($size - 1 - $namesize);
+  return $nm;
+}
+
+our $BLOB = undef;
+our $READfh = \*STDIN;
+our $BLOBoff = 0;
+our $BLOBlen = 0;
+sub SetReadSource
+{
+  my ($data) = @_;
+  unless (defined $data)
+  {
+    $BLOB = undef;
+    $READfh = \*STDIN;
+  }
+  elsif (ref($data))
+  {
+    $BLOB = undef;
+    $READfh = $data;
+  }
+  else
+  {
+    $BLOB = $data;
+    $READfh = undef;
+  }
+  $BLOBoff = 0;
+  $BLOBlen = defined($BLOB) ? length($BLOB) : 0;
+}
+sub SetReadOffset
+{
+  my ($off) = @_;
+  die "Can't set offset for piped data" unless defined $BLOB;
+  die "Bad offset for data" if (($off < 0) || ($off > $BLOBlen));
+  $BLOBoff = $off;
+}
+sub CurOffset
+{
+  return $BLOBoff;
+}
+sub ReadRaw
+{
+  my ($size, $nofail) = @_;
+  die "Can't read negative size" if $size < 0;
+  return '' if $size == 0;
+  if (defined $BLOB)
+  {
+    my $left = $BLOBlen - $BLOBoff;
+    if ($size > $left)
+    {
+      return undef if $nofail;
+      die "Not enough data in blob (offset $BLOBoff, length $BLOBlen)";
+    }
+    $BLOBoff += $size;
+    return substr($BLOB, $BLOBoff - $size, $size);
+  }
+  else
+  {
+    my $chunk;
+    my $rsize = read $READfh, $chunk, $size;
+    $BLOBoff += $rsize;
+    unless ($rsize == $size)
+    {
+      return undef if $nofail;
+      die "Failed to read $size bytes";
+    }
+    return $chunk;
+  }
+}
+sub ReadPadding
+{
+  ReadRaw(@_);
+}
+sub ReadPacked
+{
+  my ($template, $size) = @_;
+  return unpack($template, ReadRaw($size));
+}
+sub ReadDone
+{
+  if (defined $BLOB)
+  {
+    return $BLOBlen > $BLOBoff;
+  }
+  return eof $READfh;
+}
+
+
+our $WRITEfh = \*STDOUT;
+our $WRITEdata = undef;
+sub SetWriteSource
+{
+  my ($source) = @_;
+  if (ref($source))
+  {
+    $WRITEfh = $source;
+    $WRITEdata = undef;
+  }
+  else
+  {
+    $WRITEfh = undef;
+    $WRITEdata = '';
+  }
+}
+sub GetWriteData
+{
+  my $d = $WRITEdata;
+  $WRITEdata = undef;
+  return $d;
+}
+sub WriteUint32
+{
+  WritePacked('N', Num(@_));
+}
+sub WriteSint32
+{
+  my $v = Num(@_);
+  if ($v < 0)
+  {
+    $v += (2 << 31);
+  }
+  WritePacked('N', $v);
+}
+sub WriteUint16
+{
+  WritePacked('n', Num(@_));
+}
+sub WriteSint16
+{
+  my $v = Num(@_);
+  if ($v < 0)
+  {
+    $v += (2 << 15);
+  }
+  WritePacked('n', $v);
+}
+sub WriteUint8
+{
+  WritePacked('C', Num(@_));
+}
+sub WritePStr
+{
+  my ($size, $string) = @_;
+  my $nm = Encode::encode('MacRoman', $string);
+  my $namesize = length($nm);
+  die 'String too large' if ($namesize > 255 || $namesize >= $size);
+  WriteUint8($namesize);
+  WriteRaw($nm);
+  WritePadding($size - 1 - $namesize);
+}
+sub WritePadding
+{
+  WriteRaw("\0" x $_[0]);
+}
+sub WritePacked
+{
+  return WriteRaw(pack($_[0], $_[1]));
+}
+sub WriteRaw
+{
+  if ($WRITEfh)
+  {
+    print $WRITEfh @_;
+  }
+  else
+  {
+    $WRITEdata .= join('', @_);
+  }
+}
+
+
+sub Num
+{
+  my ($val, $default) = @_;
+  $default = 0 unless defined $default;
+  $val = $default unless defined $val;
+  return $val + 0;
+} # end Num
+
+sub WriteThrough
+{
+  WriteRaw(ReadRaw(@_));
+}
+
+
+1;
