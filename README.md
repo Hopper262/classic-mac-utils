@@ -15,6 +15,10 @@ Unpacks a resource fork into separate files in the current directory. Command-li
 
 If you're looking at string resources specifically, check out "strings2xml.pl" in my "marathon-utils" repository.
 
+### snd2wav.pl
+
+Converts a 'snd ' resource, as unpacked by extract_rsrc.pl, into a WAV file.
+
 ### LittleSingleDouble.pm
 
 The "applesingle" tool on Mac OS X produces invalid files; the tool fails to write values in big-endian order. This Perl module is a quick hack of Mac::AppleSingleDouble, to read the broken little-endian files.
