@@ -6,6 +6,11 @@ Perl scripts to handle resource forks and other old Mac formats.
 These are all command-line tools. Usually the input is expected on stdin and output is written to stdout. Tools dealing with resource forks expect the resource data on stdin; on Mac OS X, you can do this like:
 
     ./extract_rsrc.pl < "My Mac File"/..namedfork/rsrc
+    
+On Windows, you can use the "macbin2rsrc.pl" and "macbin2data.pl" scripts to unpack a MacBinary file for use with these tools:
+
+    macbin2rsrc.pl < My_Mac_File.bin > My_Mac_File.resources
+    extract_rsrc.pl < My_Mac_File.resources
 
 Some of these files are modifications of others' code. I should send patches upstream, but I'm extremely lazy so I probably haven't done so. Feel free to do so in my stead; I don't even mind if you take credit. I just wanted the bugs fixed.
 
@@ -39,3 +44,6 @@ Various snippets of code for dealing with Mac resources. Includes code for extra
 
 Bungie's Marathon and Pathways Into Darkness are two classic Mac applications that compressed global data structures in the 68k CODE resources. I think this was a built-in feature of Apple's MPW compiler. I haven't been able to  reverse-engineer the compression, but MPW provided a textual listing of the data chunks. This script reads MPW's output and reassembles the binary data.
 
+### macbin2rsrc.pl, macbin2data.pl
+
+Unpacks the resource or data fork from a MacBinary file. Takes the MacBinary file on standard input and writes the data to standard out.
