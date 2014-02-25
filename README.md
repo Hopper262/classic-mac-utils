@@ -24,6 +24,10 @@ If you're looking at string resources specifically, check out "strings2xml.pl" i
 
 Converts a 'snd ' resource, as unpacked by extract_rsrc.pl, into a WAV file.
 
+### pat2png.pl, ppat2png.pl
+
+Converts 'PAT ' and 'ppat' resources, as unpacked by extract_rsrc.pl, into PNG files using Image::Magick.
+
 ### LittleSingleDouble.pm
 
 The "applesingle" tool on Mac OS X produces invalid files; the tool fails to write values in big-endian order. This Perl module is a quick hack of Mac::AppleSingleDouble, to read the broken little-endian files.
