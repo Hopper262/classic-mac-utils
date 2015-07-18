@@ -24,6 +24,10 @@ If you're looking at string resources specifically, check out "strings2xml.pl" i
 
 Converts a 'snd ' resource, as unpacked by extract_rsrc.pl, into a WAV file.
 
+### pict2png.pl
+
+Converts (some) 'PICT' resources into PNG files using Image::Magick. 
+
 ### pat2png.pl, ppat2png.pl
 
 Converts 'PAT ' and 'ppat' resources, as unpacked by extract_rsrc.pl, into PNG files using Image::Magick.
@@ -35,6 +39,10 @@ The "applesingle" tool on Mac OS X produces invalid files; the tool fails to wri
 ### Macbinary.pm
 
 I found some serious problems with Mac::Macbinary 0.07. In particular, it doesn't handle files that lack a data fork, such as the vast majority of classic Mac applications.
+
+### nfnt2txt.pl, faux_bold.pl, faux_italic.pl
+
+The first script converts an 'NFNT' or 'FONT' resource, as unpacked by extract_rsrc.pl, into a machine-readable (and somewhat human-readable) text file. The latter two scripts take a font in that text format and produce a bold or italic font using the same technique as the classic Mac toolbox.
 
 ### font_ids.txt
 
