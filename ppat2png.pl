@@ -59,12 +59,13 @@ for my $i ($top..($bottom - 1))
 ReadPadding($clut_off - CurOffset());
 ReadPadding(6);
 my $clut_max = ReadSint16();
-my @colors;
+# Use associate arrays (Hashes), since ColorTable may be sparse
+my %colors;
 for my $i (0..$clut_max)
 {
-  my $value = ReadSint16();
+  my $value = ReadSint16(); # index value associated with RGB triple
   my ($red, $green, $blue) = (ReadUint16(), ReadUint16(), ReadUint16());
-  push(@colors, [ $red / 65535, $green / 65535, $blue / 65535, 0.0 ]);
+  $colors{$value} = [ $red / 65535, $green / 65535, $blue / 65535, 1.0 ];
 }
 
 # now, build image
@@ -91,9 +92,7 @@ for my $row (0..($bottom - $top - 1))
     my $idx = ord(pack('B8', $iso));
 #     warn "Byte: @{[ ord($byte) ]}  Bpp: $bpp   Bits: $bits  Sub: $subbits  Iso: $iso  Index: $idx\n";
     
-    die "Only ppats with fully specified color tables are supported, exiting\n" if $idx > scalar(@colors);
-    
-    $img->SetPixel('x' => $col, 'y' => $row, 'channel' => 'All', 'color' => $colors[$idx]);
+    $img->SetPixel('x' => $col, 'y' => $row, 'channel' => 'All', 'color' => $colors{$idx});
   }
 }
 
