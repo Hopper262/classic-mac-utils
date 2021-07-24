@@ -23,8 +23,27 @@ my $samplerate = ReadUFixed();
 my $loopstart = ReadUint32();
 my $loopend = ReadUint32();
 
-die "not standard sample encoding" unless ReadUint8() == 0;
+my $enctype = ReadUint8();
+die "not standard sample encoding" unless $enctype == 0 || $enctype == 0xFF;
 die "weird baseFrequency" unless ReadUint8() == 0x3C;
+
+my $bytes_sample = 1;
+my $channels = 1;
+if ($enctype == 0xFF)
+{
+  $channels = $numbytes;
+  my $frames = ReadUint32();
+  my $aiffrate = ReadRaw(10);
+  my $markerChunk = ReadUint32();
+  my $instChunk = ReadUint32();
+  my $aesRecording = ReadUint32();
+  my $bits_sample = ReadUint16();
+  die "weird bits per sample" unless $bits_sample == 16 || $bits_sample == 8;
+  ReadPadding(14);
+
+  $bytes_sample = $bits_sample / 8;
+  $numbytes = $bytes_sample * $channels * $frames;
+}
 
 # we're up to sound data now, let's write some WAV!
 # Thanks to: https://ccrma.stanford.edu/courses/422/projects/WaveFormat/
@@ -33,8 +52,6 @@ die "weird baseFrequency" unless ReadUint8() == 0x3C;
 
 my $data_size = $numbytes;
 my $rate = int($samplerate);
-my $bytes_sample = 1;
-my $channels = 1;
 
 binmode STDOUT;
 
@@ -54,13 +71,28 @@ print pack('v', $bytes_sample * 8);                   # BitsPerSample
 print "data";                   # Subchunk2ID
 print pack('V', $data_size);    # Subchunk2Size
 
-for my $i (1..$numbytes)
+if ($bytes_sample > 1)
 {
-  my $byte;
-  read STDIN, $byte, 1;
-  print $byte;
+  for my $i (1..int($numbytes/2))
+  {
+    my ($byte1, $byte2);
+    read STDIN, $byte1, 1;
+    read STDIN, $byte2, 1;
+    print $byte2;
+    print $byte1;
+  }
+}
+else
+{
+  for my $i (1..$numbytes)
+  {
+    my $byte;
+    read STDIN, $byte, 1;
+    print $byte;
+  }
 }
 
+exit;
 
 
 sub ReadUint32
@@ -153,4 +185,3 @@ sub ReadPacked
   my ($template, $size) = @_;
   return unpack($template, ReadRaw($size));
 }
-
